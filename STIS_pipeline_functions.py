@@ -282,7 +282,7 @@ def dq_clean(files, dqs, flags):
     return files_clean
 
 
-def difference_clean(files, difference_sigma, wind_size, sigma):
+def difference_clean(files, wind_size, sigma):
     
     # initializing lists
     differences = []
@@ -571,7 +571,7 @@ def marked_clean(files, manual_badcolumn, s):
 
 
 # how best to name the variables and still be able to feed them in? use the same name for all the arrays? seems dangerous
-def clean_data(files, dq_correct = True, dqs = None,  flags = [16], difference_correct = True, difference_sigma = 5, wind_size = 20, wind_sigma = 5, hc_correct = True, hc_sigma = 3, hc_wind_size = 2, spline_correct = True, traces = None, spline_sigma = 3, s = 7e5, manual_badcolumn = False, inner_factor = 4, outer_factor = 2, return_marked = False):
+def clean_data(files, dq_correct = True, dqs = None,  flags = [16], difference_correct = True, wind_size = 20, wind_sigma = 5, hc_correct = True, hc_sigma = 3, hc_wind_size = 2, spline_correct = True, traces = None, spline_sigma = 3, s = 7e5, manual_badcolumn = False, inner_factor = 4, outer_factor = 2, return_marked = False):
     
     if dq_correct == True:
         print("Starting dq_correct.")
@@ -586,7 +586,7 @@ def clean_data(files, dq_correct = True, dqs = None,  flags = [16], difference_c
         
     if difference_correct == True:
         print("Starting difference_correct.")
-        marked_2 = difference_clean(marked_1, difference_sigma, wind_size, wind_sigma)
+        marked_2 = difference_clean(marked_1, wind_size, wind_sigma)
         print("difference_correct complete.")
     else: 
         marked_2 = np.copy(marked_1)
