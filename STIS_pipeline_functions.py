@@ -1591,7 +1591,7 @@ def binning(wl, spectra, bins, bin_unit = "nm"):
 
     return(ordered_binned_spectrum, ordered_binned_errors, bin_centers)
 
-def spectroscopic_lightcurve_fit(params, wl, times, spectra, jitters, bins, sld, bin_unit = "nm", sys_method = "gp", juliet_name = None, mode = None, plot = False, method = None):
+def spectroscopic_lightcurve_fit(params, wl, times, spectra, jitters, bins, sld, bin_unit = "nm", sys_method = "gp", juliet_name = None, mode = None, plot = False, method = None, sampler = None):
     
     ordered_binned_spectrum, ordered_binned_errors, bin_centers = binning(wl, spectra, bins, bin_unit = bin_unit)
     #plt.figure()    
@@ -1618,7 +1618,7 @@ def spectroscopic_lightcurve_fit(params, wl, times, spectra, jitters, bins, sld,
         #print(c1, c2)
         if sys_method == "gp":
             name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
-            wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], jitters, sys_method = "gp", juliet_name=name)
+            wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], jitters, sys_method = "gp", juliet_name=name, sampler = sampler)
             fits.append(wl_lc)
             if plot == True:
                 transit_plus_GP_model = wl_lc.lc.evaluate('STIS')
@@ -1641,7 +1641,7 @@ def spectroscopic_lightcurve_fit(params, wl, times, spectra, jitters, bins, sld,
                 fits.append(wl_lc)
             else:
                 name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
-                wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], jitters, sys_method = "jitter", juliet_name = name)
+                wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], jitters, sys_method = "jitter", juliet_name = name, sampler = sampler)
                 fits.append(wl_lc)
                 if plot == True:
                     transit_plus_sys_model = wl_lc.lc.evaluate('STIS')
@@ -1709,7 +1709,7 @@ def joint_spectroscopic_lightcurve_fit(params, wl, times1, spectra1, jitters1, t
         print(c1, c2)
         if sys_method == "gp":
             name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
-            wl_lc = joint_white_light_fit(params, times1, ordered_binned_spectrum1[i], ordered_binned_errors1[i], jitters1, times2, ordered_binned_spectrum2[i], ordered_binned_errors2[i], jitters2, sys_method = "gp", juliet_name=name, limb_darkening = "fixed")
+            wl_lc = joint_white_light_fit(params, times1, ordered_binned_spectrum1[i], ordered_binned_errors1[i], jitters1, times2, ordered_binned_spectrum2[i], ordered_binned_errors2[i], jitters2, sys_method = "gp", juliet_name=name, limb_darkening = "fixed", sampler = sampler)
             fits.append(wl_lc)
             
             #if plot == True:
