@@ -1,86 +1,54 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-
 import os
+from os import path,mkdir
+
 import numpy as np
-import glob
-import pickle
-import matplotlib.pyplot as plt
 from numpy.polynomial import chebyshev
-from scipy.ndimage import gaussian_filter1d
-from mpl_toolkits.axes_grid1.inset_locator import mark_inset
-from scipy.interpolate import interp1d
-from scipy.signal import medfilt, medfilt2d
-import pandas as pd
-import time
-from scipy.interpolate import UnivariateSpline
-from datetime import datetime
-from matplotlib.dates import date2num, DateFormatter
-import matplotlib.animation as animation
 
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+import glob
 
-# Libraries for plotting, reading data:
-import seaborn as sns 
-sns.set_style("ticks") # Set seaborn "ticks" style for better styled plots
-from astropy.io import fits
-from astropy.utils.data import download_file
-# Library for some power-spectral density analysis:
-from astropy.timeseries import LombScargle
-
-# Corner (for posterior distribution plotting):
-import corner
-# Juliet (for transit fitting & model evaluation:)
-import juliet
-#plt.style.use('dark_background')
-
-from barycorrpy import utc_tdb
-from astropy.time import Time
-from transitspectroscopy import spectroscopy
-
-import batman
-import lmfit
-import dynesty
-from dynesty import plotting as dyplot
-from dynesty import utils as dyfunc
-from scipy.optimize import curve_fit
+import pickle
 
 import scipy
-import matplotlib.ticker as ticker
-from matplotlib.backends.backend_pdf import PdfPages
-from astropy.utils.data import get_pkg_data_filename, download_file
-from astropy.table import Table, Column, MaskedColumn
-from astropy.io import fits, ascii
+from scipy.interpolate import interp1d, splev, splrep, UnivariateSpline
+import scipy.signal as signal
+from scipy.signal import medfilt
+from scipy.io import readsav
+
+import pandas as pd
+
+# pretty plots
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as PathEffects
+import seaborn as sns 
+sns.set_context("talk")
+#plt.style.use('dark_background')
+
+from astropy.io import fits
 from astropy.modeling.models import custom_model
 from astropy.modeling.fitting import LevMarLSQFitter
 import astropy.units as u
-from scipy.interpolate import interp1d, splev, splrep
-import scipy.optimize as opt
-from scipy.io import readsav
-from scipy import stats
-from scipy.signal import savgol_filter
-import scipy.signal as signal
-import glob
+from astropy.time import Time
+
+import juliet
+
+from barycorrpy import utc_tdb
+
+from transitspectroscopy import spectroscopy
+
+import batman
+
 import lmfit
-import pickle
-from os import path,mkdir
-from sklearn.linear_model import LinearRegression
-#import statsmodels.api as sm
-import warnings
-import pandas as pd
-import os
-import shutil
-import numba
+
+import dynesty
 
 get_ipython().run_line_magic('matplotlib', 'inline')
 
 
-
 # function that opens each orbit fits file and gets the science exposures
 # optional kwargs to also get the dq extensions and jit vectors, for later use in cleaning/detrending the data
-# ADD: automatically throws out the first exposure of each orbit, option to also throw out the first orbit
-# ADD: error message if jit file doesn't exist
 def get_data(files, dq = True, jit = True, keep_first_orbit = True):
     
     # initializing some lists to hold the data
@@ -188,7 +156,6 @@ def get_data(files, dq = True, jit = True, keep_first_orbit = True):
         jitter_dict = {}
         for i in range(len(jitter_vector_list)):
             jitter_dict[jitter_vector_list[i]] = [item[i] for item in jitter_hold]
-            # NORMALIZE JITTER VECTORS HERE
         
         
     
@@ -667,7 +634,8 @@ def spectral_extraction(data, trace, method = "optimal", correct_bkg = False, ap
 
     return spectrum
 
-#  this was for finding median p values for optimal extraction and fixing them, but it didn't work that great
+# this was for finding median p values for optimal extraction and fixing them, but it didn't work that great
+# but I'll leave it as an option
 def spectral_extraction_bulk(data_lst, trace_lst, method = "optimal", correct_bkg = False, aperture_radius = 15., ron = 1., gain = 1., nsigma = 12, polynomial_spacing = 0.75, polynomial_order = 3, errors = None, median_p = True):
     spectra = []
     
@@ -758,10 +726,10 @@ def impact_param(i, a_Rs):
 def inclination(b, a_Rs):
     return np.rad2deg(np.arccos(b/a_Rs))
 
-def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitter", limb_darkening = "fixed", gp_kernel = "Matern", N_iters = 3, juliet_name = None, instrument_name = "STIS", sampler = None, jitter_priors = "exponential"):
+def white_light_fit(input_params, times, lc, errors, detrenders, sys_method = "linear", limb_darkening = "fixed", gp_kernel = "Matern", N_iters = 3, juliet_name = None, instrument_name = "STIS", sampler = "dynamic_dynesty", gp_priors = "exponential"):
     if os.path.exists("juliet_fits") != True:
         os.mkdir("juliet_fits")
-    if sys_method == "jitter":
+    if sys_method == "linear":
         if sampler == "LM":
             p = lmfit.Parameters()
             fit_param = {} # dictionary to save our fit params
@@ -791,7 +759,7 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
 
 
             # systematics params
-            for j in jitters.keys():
+            for j in detrenders.keys():
                 p.add(j, value = 0, vary = 1)
 
             # linear systematics term
@@ -806,14 +774,14 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
             # this also gives better uncertainties
             err = None
             for _ in range(N_iters-1):
-                result = lmfit.minimize(residual, params = p, args = (times, params, lc, err, jitters)) # fit data
-                err = np.std(lc - model_light_curve(p, times, params, jitters)[0])
+                result = lmfit.minimize(residual, params = p, args = (times, params, lc, err, detrenders)) # fit data
+                err = np.std(lc - model_light_curve(p, times, params, detrenders)[0])
                 for name, param in result.params.items(): # iterate through our lmfit parameters and update the variables
                     p[name].value = param.value
 
             # one final fit to be sure. these Nth fits are fast.
-            err = np.std(lc - model_light_curve(p, times, params, jitters)[0])
-            result = lmfit.minimize(residual, params = p, args = (times, params, lc, err, jitters))
+            err = np.std(lc - model_light_curve(p, times, params, detrenders)[0])
+            result = lmfit.minimize(residual, params = p, args = (times, params, lc, err, detrenders))
 
             # iterate through our two dictionaries to save fits and fit uncertainties
             for name, param in result.params.items():
@@ -823,8 +791,8 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
                     fit_uncs[name+'_unc'] = param.stderr
 
             t_final = np.linspace(times[0], times[-1], 1000)        
-            model_fit = model_light_curve(p, times, params, jitters) # stores the final best fitting model
-            model_final = transit_final(p, t_final, params, jitters)
+            model_fit = model_light_curve(p, times, params, detrenders) # stores the final best fitting model
+            model_final = transit_final(p, t_final, params, detrenders)
             data_fit_cube = [fit_param, fit_uncs, model_final, lc] # stores all our stuff in a neat cube
             return data_fit_cube
         
@@ -832,10 +800,10 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
             # Create dictionaries:
             time, fluxes, fluxes_error, sys = {},{},{},{}
             # Save data into those dictionaries:
-            time[instrument_name], fluxes[instrument_name], fluxes_error[instrument_name] = times, lc/lc[0], \
-            errors/lc[0]
+            time[instrument_name], fluxes[instrument_name], fluxes_error[instrument_name] = times, lc/np.median(lc[:10]), \
+            errors/np.median(lc[:10])
             
-            sys[instrument_name]= np.vstack(jitters.values()).T
+            sys[instrument_name]= np.vstack(detrenders.values()).T
 
             input_param_names = []
             input_dist = []
@@ -869,17 +837,11 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
             input_param_names_sys = []
             input_dist_sys = []
             hyperps_vals_sys = []
-            for i in range(len(jitters.keys())):
+            for i in range(len(detrenders.keys())):
                 name = "theta" + str(i) + "_" + instrument_name
-                if jitter_priors == "exponential":
-                    input_param_names_sys.append(name)
-                    input_dist_sys.append("exponential")
-                    hyperps_vals_sys.append([1])
-
-                elif jitter_priors == "loguniform":
-                    input_param_names_sys.append(name)
-                    input_dist_sys.append("loguniform")
-                    hyperps_vals_sys.append([-100,100])
+                input_param_names_sys.append(name)
+                input_dist_sys.append("uniform")
+                hyperps_vals_sys.append([-100, 100])
 
             if limb_darkening == "fixed":
                 ld_names = ["q1_" + instrument_name, "q2_" + instrument_name]
@@ -892,20 +854,27 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
                 ld_dist = ['uniform','uniform']
                 ld_hyperps = [[0,1], [0,1]]
 
-            if "rho" in input_params.keys():
                 
-                other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name]
+            other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name]
 
-                other_params_dist = ['fixed', 'normal', 'loguniform']
+            other_params_dist = ['fixed', 'normal', 'loguniform']
 
-                other_params_hyperps = [1.0, [0.,1.0], [10, 1000.]]
+            other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.]]    
+            
+            #if "rho" in input_params.keys():
+            #    
+            #    other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name]
 
-            else:
-                other_params = ["rho", "mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name]
+            #    other_params_dist = ['fixed', 'normal', 'loguniform']
 
-                other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform']
+            #    other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.]]
 
-                other_params_hyperps = [[100, 10000.], 1.0, [0.,1.0], [10, 1000.]]
+            #else:
+            #    other_params = ["rho", "mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name]
+
+            #    other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform']
+
+            #    other_params_hyperps = [[100, 10000.], 1.0, [0.,1.0], [0.1, 10000.]]
 
             params = input_param_names + ld_names + other_params + input_param_names_sys
 
@@ -927,7 +896,9 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
                                   out_folder = "juliet_fits/" + juliet_name)
 
             if sampler == "dynesty":
-                results = dataset.fit(use_dynesty = True, dynesty_nthreads = 2, verbose = True)
+                results = dataset.fit(sampler = "dynesty", nthreads = 2, verbose = True)
+            elif sampler == "dynamic_dynesty":
+                results = dataset.fit(sampler = "dynamic_dynesty", nthreads = 2, verbose = True)
             else: 
                 results = dataset.fit(n_live_points = 500, verbose = True)
             return results
@@ -937,10 +908,10 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
         # Create dictionaries:
         time, fluxes, fluxes_error, sys = {},{},{},{}
         # Save data into those dictionaries:
-        time[instrument_name], fluxes[instrument_name], fluxes_error[instrument_name] = times, lc/lc[0], \
-        errors/lc[0]
+        time[instrument_name], fluxes[instrument_name], fluxes_error[instrument_name] = times, lc/np.median(lc[:10]), \
+        errors/np.median(lc[:10])
 
-        sys[instrument_name]= np.vstack(jitters.values()).T
+        sys[instrument_name]= np.vstack(detrenders.values()).T
 
         input_param_names = []
         input_dist = []
@@ -973,18 +944,18 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
         input_param_names_sys = []
         input_dist_sys = []
         hyperps_vals_sys = []
-        for i in range(len(jitters.keys())):
+        for i in range(len(detrenders.keys())):
             if gp_kernel == "ExpSquared":
                 name = "GP_alpha" + str(i) + "_" + instrument_name
             elif gp_kernel == "Matern":
                 name = "GP_malpha" + str(i) + "_" + instrument_name
             
-            if jitter_priors == "exponential":
+            if gp_priors == "exponential":
                 input_param_names_sys.append(name)
                 input_dist_sys.append("exponential")
                 hyperps_vals_sys.append([1])
             
-            elif jitter_priors == "loguniform":
+            elif gp_priors == "loguniform":
                 input_param_names_sys.append(name)
                 input_dist_sys.append("loguniform")
                 hyperps_vals_sys.append([1e-5, 1e5])
@@ -1000,22 +971,31 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
             ld_dist = ['uniform','uniform']
             ld_hyperps = [[0,1], [0,1]]
 
-        if "rho" in input_params.keys():
-                
-            other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name, \
+            
+            
+        other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name, \
                        "GP_sigma_" + instrument_name]
 
-            other_params_dist = ['fixed', 'normal', 'loguniform', 'loguniform']
+        other_params_dist = ['fixed', 'normal', 'loguniform', 'loguniform']
 
-            other_params_hyperps = [1.0, [0.,1.0], [10, 1000.], [1e-6, 1e6]]
+        other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
         
-        else:
-            other_params = ["rho", "mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name, \
-                       "GP_sigma_" + instrument_name]
+        #if "rho" in input_params.keys():
+                
+        #    other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name, \
+        #               "GP_sigma_" + instrument_name]
 
-            other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform', 'loguniform']
+        #    other_params_dist = ['fixed', 'normal', 'loguniform', 'loguniform']
 
-            other_params_hyperps = [[100, 10000.], 1.0, [0.,1.0], [10, 1000.], [1e-6, 1e6]]
+        #    other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
+        
+        #else:
+        #    other_params = ["rho", "mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name, \
+        #               "GP_sigma_" + instrument_name]
+
+        #    other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform', 'loguniform']
+
+        #    other_params_hyperps = [[100, 10000.], 1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
 
 
         params = input_param_names + ld_names + other_params + input_param_names_sys
@@ -1038,95 +1018,19 @@ def white_light_fit(input_params, times, lc, errors, jitters, sys_method = "jitt
                               out_folder = "juliet_fits/" + juliet_name)
 
         if sampler == "dynesty":
-            results = dataset.fit(use_dynesty = True, dynesty_nthreads = 2, verbose = True)
+            results = dataset.fit(sampler = "dynesty", nthreads = 2, verbose = True)
+        elif sampler == "dynamic_dynesty":
+            results = dataset.fit(sampler = "dynamic_dynesty", nthreads = 2, verbose = True)
         else:
             results = dataset.fit(n_live_points = 500, verbose = True)
         return results
         
     
     
-
-def model_light_curve(p, t, params, jitters):
-    """
-    Generates a light curve with systematics. Uses the lmfit 'p' dictionary.
-    """
-    params.t0  = p['t0']
-    params.per = p['P']
-    params.rp  = p['p']
-    params.a   = p['a']
-    params.inc = inclination(p['b'], p['a'])
-    params.ecc = p['ecc']
-    params.w   = p['omega']
-    #params.limb_dark = "quadratic"
-    #params.u = [0.1, 0.3]
-
-    if p['p'] == 0:
-        light_curve = np.ones(len(t)) # if it doesn't want a transit, give it a flat line
-    else:
-        light_curve = batman.TransitModel(params, t).light_curve(params)
-    
-    # there must be a way to make this more robust
-    systematics =  p["V2_roll"]*np.array(jitters["V2_roll"]) + p["V3_roll"]*np.array(jitters["V3_roll"]) + \
-    p["Latitude"]*np.array(jitters["Latitude"]) + p["Longitude"]*np.array(jitters["Longitude"]) + \
-    p["RA"]*np.array(jitters["RA"]) + p["DEC"]*np.array(jitters["DEC"]) + 1 #p["linear"]*t + 1 #
-    
-    model = p['f0'] * light_curve * systematics
-    t_final = np.linspace(t[0], t[-1], 1000)  
-    light_curve_plot = batman.TransitModel(params, t_final).light_curve(params)
-    #plt.plot(t_final, p['f0'] * light_curve_plot)
-    #plt.xlabel("Time (BJD-TBD)")
-    #plt.ylabel("Counts")
-    #plt.plot(model)
-    #plt.plot(model)
-    #plt.show()
-    #print(model)
-    return model, systematics, light_curve
-
-    
-def residual(p, t, params, data, err, jitters):
-    """
-    Outputs the residual of the model and data.
-    """
-    
-    model = model_light_curve(p, t, params, jitters)[0]
-    sys = model_light_curve(p, t, params, jitters)[1]
-    
-    '''
-    plt.scatter(t, data/sys, color = "purple", label = "with systematics")
-    plt.legend()
-    plt.xlabel("Time (BJD-TBD)")
-    plt.ylabel("Counts")
-    plt.show()
-    plt.plot(t, model)
-    plt.scatter(t, data, color = "blue", label = "Original", alpha = 0.5)
-    plt.xlabel("Time (BJD-TBD)")
-    plt.ylabel("Counts")
-    plt.legend()
-    plt.show()
-    '''
-    if err == None:
-        err = np.sqrt(p['f0']) # if no errorbars specified, assume shot noise uncertainty from baseline flux
-
-    chi2 = sum((data-model)**2/err**2)
-    res = np.std((data-model)/max(model))
-    
-    return (data-model)/err
-
-def transit_final(p, t, params, jitters):
-    transit_model_final = batman.TransitModel(params, t).light_curve(params)
-    systematics = p["V2_roll"]*np.array(jitters["V2_roll"]) + p["V3_roll"]*np.array(jitters["V3_roll"]) + \
-    p["Latitude"]*np.array(jitters["Latitude"]) + p["Longitude"]*np.array(jitters["Longitude"]) + \
-    p["RA"]*np.array(jitters["RA"]) + p["DEC"]*np.array(jitters["DEC"]) + 1
-    
-    #final_model = p["f0"] * transit_model_final * systematics
-    
-    return [p["f0"], transit_model_final, systematics]
-
-
-def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, lc2, errors2, jitters2, sys_method = "jitter", limb_darkening = "fixed", gp_kernel = "Matern", N_iters = 3, juliet_name = None, instrument_name1 = "STIS1", instrument_name2 = "STIS2", sampler = None, jitter_priors = "exponential"):
+def joint_white_light_fit(input_params, times1, lc1, errors1, detrenders1, times2, lc2, errors2, detrenders2, sys_method = "linear", limb_darkening = "fixed", gp_kernel = "Matern", N_iters = 3, juliet_name = None, instrument_name1 = "STIS1", instrument_name2 = "STIS2", sampler = "dynamic_dynesty", gp_priors = "exponential"):
     if os.path.exists("juliet_fits") != True:
         os.mkdir("juliet_fits")
-    if sys_method == "jitter":
+    if sys_method == "linear":
         if sampler == "LM":
             # systematics will act on individual light curves, which will then be phased into one light curve for the transit fit
             p = lmfit.Parameters()
@@ -1157,10 +1061,10 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
 
 
             # systematics params
-            for j in jitters1.keys():
+            for j in detrenders1.keys():
                 p.add(j+"_"+str(1), value = 0, vary = 1)
 
-            for j in jitters2.keys():
+            for j in detrenders2.keys():
                 p.add(j+"_"+str(2), value = 0, vary = 1)
 
             # linear systematics term
@@ -1175,14 +1079,14 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
             # this also gives better uncertainties
             err = None
             for _ in range(N_iters-1):
-                result = lmfit.minimize(residual_joint, params = p, args = (times1, times2, params, lc1, lc2, err, jitters1, jitters2)) # fit data
-                err = np.std(lc1 - model_light_curve_joint(p, times1, times2, params, jitters1, jitters2)[0][0]) + np.std(lc2 - model_light_curve_joint(p, times1, times2, params, jitters1, jitters2)[0][1])
+                result = lmfit.minimize(residual_joint, params = p, args = (times1, times2, params, lc1, lc2, err, detrenders1, detrenders2)) # fit data
+                err = np.std(lc1 - model_light_curve_joint(p, times1, times2, params, detrenders1, detrenders2)[0][0]) + np.std(lc2 - model_light_curve_joint(p, times1, times2, params, detrenders1, detrenders2)[0][1])
                 for name, param in result.params.items(): # iterate through our lmfit parameters and update the variables
                     p[name].value = param.value
 
             # one final fit to be sure. these Nth fits are fast.
-            err = np.std(lc1 - model_light_curve_joint(p, times1, times2, params, jitters1, jitters2)[0][0]) + np.std(lc2 - model_light_curve_joint(p, times1, times2, params, jitters1, jitters2)[0][1])
-            result = lmfit.minimize(residual_joint, params = p, args = (times1, times2, params, lc1, lc2, err, jitters1, jitters2)) 
+            err = np.std(lc1 - model_light_curve_joint(p, times1, times2, params, detrenders1, detrenders2)[0][0]) + np.std(lc2 - model_light_curve_joint(p, times1, times2, params, detrenders1, detrenders2)[0][1])
+            result = lmfit.minimize(residual_joint, params = p, args = (times1, times2, params, lc1, lc2, err, detrenders1, detrenders2)) 
 
             # iterate through our two dictionaries to save fits and fit uncertainties
             for name, param in result.params.items():
@@ -1192,8 +1096,8 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
                     fit_uncs[name+'_unc'] = param.stderr
 
             t_final = np.linspace(times1[0], times1[-1], 1000)        
-            model_fit = model_light_curve_joint(p, times1, times2, params, jitters1, jitters2) # stores the final best fitting model
-            model_final = transit_final_joint(p, t_final, params, jitters1, jitters2)
+            model_fit = model_light_curve_joint(p, times1, times2, params, detrenders1, detrenders2) # stores the final best fitting model
+            model_final = transit_final_joint(p, t_final, params, detrenders1, detrenders2)
             data_fit_cube = [fit_param, fit_uncs, model_final, [lc1, lc2]] # stores all our stuff in a neat cube
             return data_fit_cube
         
@@ -1201,13 +1105,13 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
             # Create dictionaries:
             time, fluxes, fluxes_error, sys = {},{},{},{}
             # Save data into those dictionaries:
-            time[instrument_name1], fluxes[instrument_name1], fluxes_error[instrument_name1] = times1, lc1/lc1[0], \
-            errors1/lc1[0]
-            time[instrument_name2], fluxes[instrument_name2], fluxes_error[instrument_name2] = times2, lc2/lc2[0], \
-            errors2/lc2[0]
+            time[instrument_name1], fluxes[instrument_name1], fluxes_error[instrument_name1] = times1, lc1/np.median(lc1[:10]), \
+            errors1/np.median(lc1[:10])
+            time[instrument_name2], fluxes[instrument_name2], fluxes_error[instrument_name2] = times2, lc2/np.median(lc2[:10]), \
+            errors2/np.median(lc2[:10])
             
-            sys[instrument_name1]= np.vstack(jitters1.values()).T
-            sys[instrument_name2]= np.vstack(jitters2.values()).T
+            sys[instrument_name1]= np.vstack(detrenders1.values()).T
+            sys[instrument_name2]= np.vstack(detrenders2.values()).T
 
             input_param_names = []
             input_dist = []
@@ -1242,35 +1146,22 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
             input_dist_sys1 = []
             hyperps_vals_sys1 = []
             
-            for i in range(len(jitters1.keys())):
+            for i in range(len(detrenders1.keys())):
                 name = "theta" + str(i) + "_" + instrument_name1
-                
-                if jitter_priors == "exponential":
-                    input_param_names_sys1.append(name)
-                    input_dist_sys1.append("exponential")
-                    hyperps_vals_sys1.append([1])
-
-                elif jitter_priors == "loguniform":
-                    input_param_names_sys1.append(name)
-                    input_dist_sys1.append("loguniform")
-                    hyperps_vals_sys1.append([1e-5, 1e5])
+                input_param_names_sys1.append(name)
+                input_dist_sys1.append("uniform")
+                hyperps_vals_sys1.append([-100, 100])
+                    
                 
             input_param_names_sys2 = []
             input_dist_sys2 = []
             hyperps_vals_sys2 = []
             
-            for i in range(len(jitters2.keys())):
+            for i in range(len(detrenders2.keys())):
                 name = "theta" + str(i) + "_" + instrument_name2
-                
-                if jitter_priors == "exponential":
-                    input_param_names_sys2.append(name)
-                    input_dist_sys2.append("exponential")
-                    hyperps_vals_sys2.append([1])
-
-                elif jitter_priors == "loguniform":
-                    input_param_names_sys2.append(name)
-                    input_dist_sys2.append("loguniform")
-                    hyperps_vals_sys2.append([1e-5, 1e5])
+                input_param_names_sys2.append(name)
+                input_dist_sys2.append("uniform")
+                hyperps_vals_sys2.append([-100, 100])
 
 
             if limb_darkening == "fixed":
@@ -1283,14 +1174,31 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
                 ld_names = ["q1_" + instrument_name1 + "_" + instrument_name2, "q2_" + instrument_name1 + "_" + instrument_name2]
                 ld_dist = ['uniform','uniform']
                 ld_hyperps = [[0,1], [0,1]]
+            
+            
+            other_params = ["mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2]
 
-            other_params = ["rho", "mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2]
+            other_params_dist = ['fixed', 'normal', 'loguniform', 'fixed', 'normal', 'loguniform']
 
-            other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform', 'fixed', 'normal', 'loguniform']
+            other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], 1.0, [0.,1.0], [0.1, 10000.]]
+            
+            #if "rho" in input_params.keys():
 
-            other_params_hyperps = [[300, 1000.], 1.0, [0.,1.0], [10, 1000.], 1.0, [0.,1.0], [10, 1000.]]
+            #    other_params = ["mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2]
 
+            #    other_params_dist = ['fixed', 'normal', 'loguniform', 'fixed', 'normal', 'loguniform']
 
+            #    other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], 1.0, [0.,1.0], [0.1, 10000.]]
+
+            #else:
+
+            #    other_params = ["rho", "mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2]
+
+            #    other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform', 'fixed', 'normal', 'loguniform']
+
+             #   other_params_hyperps = [[100, 10000.], 1.0, [0.,1.0], [0.1, 10000.], 1.0, [0.,1.0], [0.1, 10000.]]
+
+                
             params = input_param_names + ld_names + other_params + input_param_names_sys1 + input_param_names_sys2
 
             dists = input_dist + ld_dist + other_params_dist + input_dist_sys1 + input_dist_sys2
@@ -1309,9 +1217,11 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
                 dataset = juliet.load(priors=priors, t_lc = time, y_lc = fluxes, \
                                   yerr_lc = fluxes_error, linear_regressors_lc = sys,
                                   out_folder = "juliet_fits/" + juliet_name)
-
+                
             if sampler == "dynesty":
-                results = dataset.fit(use_dynesty = True, dynesty_nthreads = 2, verbose = True)
+                results = dataset.fit(sampler = "dynesty", nthreads = 2, verbose = True)
+            elif sampler == "dynamic_dynesty":
+                results = dataset.fit(sampler = "dynamic_dynesty", nthreads = 2, verbose = True)
             else: 
                 results = dataset.fit(n_live_points = 500, verbose = True)
             return results
@@ -1323,13 +1233,13 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
         # Create dictionaries:
         time, fluxes, fluxes_error, sys = {},{},{},{}
         # Save data into those dictionaries:
-        time[instrument_name1], fluxes[instrument_name1], fluxes_error[instrument_name1] = times1, lc1/lc1[0], \
-        errors1/lc1[0]
-        time[instrument_name2], fluxes[instrument_name2], fluxes_error[instrument_name2] = times2, lc2/lc2[0], \
-        errors2/lc1[0]
+        time[instrument_name1], fluxes[instrument_name1], fluxes_error[instrument_name1] = times1, lc1/np.median(lc1[:10]), \
+        errors1/np.median(lc1[:10])
+        time[instrument_name2], fluxes[instrument_name2], fluxes_error[instrument_name2] = times2, lc2/np.median(lc2[:10]), \
+        errors2/np.median(lc2[:10])
 
-        sys[instrument_name1]= np.vstack(jitters1.values()).T
-        sys[instrument_name2]= np.vstack(jitters2.values()).T
+        sys[instrument_name1]= np.vstack(detrenders1.values()).T
+        sys[instrument_name2]= np.vstack(detrenders2.values()).T
 
         input_param_names = []
         input_dist = []
@@ -1363,18 +1273,18 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
         input_param_names_sys1 = []
         input_dist_sys1 = []
         hyperps_vals_sys1 = []
-        for i in range(len(jitters1.keys())):
+        for i in range(len(detrenders1.keys())):
             if gp_kernel == "ExpSquared":
                 name = "GP_alpha" + str(i) + "_" + instrument_name1
             elif gp_kernel == "Matern":
                 name = "GP_malpha" + str(i) + "_" + instrument_name1
 
-            if jitter_priors == "exponential":
+            if gp_priors == "exponential":
                 input_param_names_sys1.append(name)
                 input_dist_sys1.append("exponential")
                 hyperps_vals_sys1.append([1])
 
-            elif jitter_priors == "loguniform":
+            elif gp_priors == "loguniform":
                 input_param_names_sys1.append(name)
                 input_dist_sys1.append("loguniform")
                 hyperps_vals_sys1.append([1e-5, 1e5])
@@ -1382,18 +1292,18 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
         input_param_names_sys2 = []
         input_dist_sys2 = []
         hyperps_vals_sys2 = []
-        for i in range(len(jitters2.keys())):
+        for i in range(len(detrenders2.keys())):
             if gp_kernel == "ExpSquared":
                 name = "GP_alpha" + str(i) + "_" + instrument_name2
             elif gp_kernel == "Matern":
                 name = "GP_malpha" + str(i) + "_" + instrument_name2
 
-            if jitter_priors == "exponential":
+            if gp_priors == "exponential":
                 input_param_names_sys2.append(name)
                 input_dist_sys2.append("exponential")
                 hyperps_vals_sys2.append([1])
 
-            elif jitter_priors == "loguniform":
+            elif gp_priors == "loguniform":
                 input_param_names_sys2.append(name)
                 input_dist_sys2.append("loguniform")
                 hyperps_vals_sys2.append([1e-5, 1e5])
@@ -1409,21 +1319,28 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
             ld_dist = ['uniform','uniform']
             ld_hyperps = [[0,1], [0,1]]
 
-        if "rho" in input_params.keys():
+        other_params = ["mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "GP_sigma_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2, "GP_sigma_" + instrument_name2]
 
-            other_params = ["mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "GP_sigma_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2, "GP_sigma_" + instrument_name2]
+        other_params_dist = ['fixed', 'normal', 'loguniform', 'loguniform', 'fixed', 'normal', 'loguniform', 'loguniform']
 
-            other_params_dist = ['fixed', 'normal', 'loguniform', 'loguniform', 'fixed', 'normal', 'loguniform', 'loguniform']
+        other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6], 1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
+        
+        
+        #if "rho" in input_params.keys():
 
-            other_params_hyperps = [1.0, [0.,1.0], [10, 1000.], [1e-6, 1e6], 1.0, [0.,1.0], [10, 1000.], [1e-6, 1e6]]
+        #    other_params = ["mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "GP_sigma_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2, "GP_sigma_" + instrument_name2]
 
-        else:
+        #    other_params_dist = ['fixed', 'normal', 'loguniform', 'loguniform', 'fixed', 'normal', 'loguniform', 'loguniform']
 
-            other_params = ["rho", "mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "GP_sigma_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2, "GP_sigma_" + instrument_name2]
+        #    other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6], 1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
 
-            other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform', 'loguniform', 'fixed', 'normal', 'loguniform', 'loguniform']
+        #else:
 
-            other_params_hyperps = [[100, 10000.], 1.0, [0.,1.0], [10, 1000.], [1e-6, 1e6], 1.0, [0.,1.0], [10, 1000.], [1e-6, 1e6]]
+        #    other_params = ["rho", "mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "GP_sigma_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2, "GP_sigma_" + instrument_name2]
+
+        #    other_params_dist = ['loguniform', 'fixed', 'normal', 'loguniform', 'loguniform', 'fixed', 'normal', 'loguniform', 'loguniform']
+
+        #    other_params_hyperps = [[100, 10000.], 1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6], 1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
 
 
         params = input_param_names + ld_names + other_params + input_param_names_sys1 + input_param_names_sys2
@@ -1448,13 +1365,325 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, jitters1, times2, 
 
         # Fit:
         if sampler == "dynesty":
-            results = dataset.fit(use_dynesty = True, dynesty_nthreads = 2, verbose = True)
+            results = dataset.fit(sampler = "dynesty", nthreads = 2, verbose = True)
+        elif sampler == "dynamic_dynesty":
+            results = dataset.fit(sampler = "dynamic_dynesty", nthreads = 2, verbose = True)
         else:
             results = dataset.fit(n_live_points = 500, verbose = True)
         return results
         
+def spectroscopic_lightcurve_fit(params, wl, times, spectra, detrenders, bins, sld, bin_unit = "nm",\
+                                 sys_method = "gp", juliet_name = None, mode = None, plot = False,\
+                                 vertical_offset = 0.015, figure_offset = 0.015, savefig = False,\
+                                 fig_name = None, method = None, sampler = "dynamic_dynesty"):
+    ordered_binned_spectrum, ordered_binned_errors, bin_centers = binning(wl, spectra, bins, bin_unit = bin_unit)
+    bin_lst = np.loadtxt(bins, delimiter = "\t")
+    if bin_unit == "nm":
+        bin_lst = bin_lst*10
+        
+    fits = []
+    depths = []
+    depth_e = []
+    fit_value = []
+    if os.path.exists("juliet_fits/" + juliet_name) != True:
+        os.mkdir("juliet_fits/" + juliet_name)
+    
+    colormap = plt.cm.nipy_spectral
+    colors = colormap(np.linspace(0.1, 0.9, len(ordered_binned_spectrum)))
+        
+    plt.figure(figsize = (8, 24))
+    v_off = 0
+    fig_off = 0
+    for i in range(len(ordered_binned_spectrum)):
+        if mode == None:
+            print("For limb darkening, please pass mode = which HST mode you're using :)")
+            break
+        c1, c2 = sld.compute_quadratic_ld_coeffs(
+        wavelength_range=np.array([bin_lst[i][0], bin_lst[i][1]]),
+        mode=mode)
+        params["c1"] = [c1]
+        params["c2"] = [c2]
+        #print(c1, c2)
+        if sys_method == "gp":
+            name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
+            wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], detrenders, sys_method = "gp", juliet_name=name, sampler = sampler)
+            fits.append(wl_lc)
+            fit_value.append(np.array([wl_lc.posteriors['lnZ'], wl_lc.posteriors['lnZerr']]))
+            #if plot == True:
+            #    transit_plus_GP_model = wl_lc.lc.evaluate('STIS')
+            #    transit_model = wl_lc.lc.evaluate('STIS', evaluate_transit = True)
 
-def model_light_curve_joint(p, t1, t2, params, jitters1, jitters2):
+            #    gp_model = transit_plus_GP_model - transit_model
+
+            #    plt.figure(figsize = (10,7))
+            #    plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]))
+            #    plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]) - (transit_plus_GP_model - transit_model),alpha=0.4, label = "gp detrending")
+            #    plt.ylabel("Relative Flux")
+            #    plt.xlabel("Time (BJD)")
+            #    plt.plot(times, transit_model, color='red',zorder=10, label = "gp transit model")
+            #    plt.legend()
+            #    plt.show()
+                
+        elif sys_method == "linear":
+            if method == "LM":
+                wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], detrenders, sys_method = "linear", method = "LM")
+                fits.append(wl_lc)
+            else:
+                name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
+                wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], detrenders, sys_method = "linear", juliet_name = name, sampler = sampler)
+                fits.append(wl_lc)
+                fit_value.append(np.array([wl_lc.posteriors['lnZ'], wl_lc.posteriors['lnZerr']]))
+
+        if plot == True:
+            t_final = np.linspace(times[0], times[-1], 1000)
+            # then the gp detrending
+            transit_plus_GP_model = wl_lc.lc.evaluate('STIS')
+            transit_model = wl_lc.lc.evaluate('STIS', evaluate_transit = True)
+            transit_model_resamp, error68_up, error68_down = wl_lc.lc.evaluate('STIS', evaluate_transit = True, t = t_final, return_err = True)
+
+            # there may be a small vertical offset between the two models because of the different normalizations - account for that
+            offset = np.nanmedian(wl_lc.posteriors['posterior_samples']['mflux_STIS'])
+            plt.scatter(times, (ordered_binned_spectrum[i]/np.median(ordered_binned_spectrum[i][:10]))+v_off, label = "raw data", color = colors[i], alpha = 0.3, s = 15)
+            plt.scatter(times, (ordered_binned_spectrum[i]/np.median(ordered_binned_spectrum[i][:10])) - (transit_plus_GP_model - transit_model) + offset+v_off,alpha=1, label = "gp detrending", color = colors[i], s = 15)
+            #plt.plot(t_final, batman_model(t_final), color='black',zorder=10, label = "gp transit model (batman)")
+            plt.plot(np.linspace(times[0], times[-1], 1000), transit_model_resamp + offset+v_off, color = colors[i],zorder=10, label = "gp + transit model")
+            plt.fill_between(t_final, error68_up+offset+v_off, error68_down+offset+v_off, color = colors[i], alpha = 0.2, label = "68% error")
+
+            txt = plt.text(times[0], 1.004 + fig_off ,str(bin_lst[i]/10000), size=11, color='black', weight = "bold")
+            txt.set_path_effects([PathEffects.withStroke(linewidth=5, foreground='w')])
+
+            v_off -= vertical_offset
+            fig_off -= figure_offset
+        
+    if plot == True:
+        plt.ylabel("Relative Flux + Vertical Offset")
+        plt.xlabel("Time (BJD-TBD)")
+        plt.ylim(1.004 + fig_off - figure_offset, 1.004 + figure_offset)
+        if savefig == True:
+            plt.savefig(fig_name, dpi = 300, facecolor = "white", bbox_inches="tight")
+        else:
+            plt.show()  
+    
+    
+    if sys_method == "gp":
+        for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
+            fit = np.genfromtxt(file, dtype=None)
+            for param in fit:
+                if param[0].decode() == "p_p1":
+                    depths.append(param[1])
+                    depth_e.append((param[2], param[3]))
+        return(bin_centers, depths, depth_e, fit_value)
+    
+    elif sys_method == "linear":
+        if method == "LM":
+            print("not implemented :]")
+        else:
+            for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
+                fit = np.genfromtxt(file, dtype=None)
+                for param in fit:
+                    if param[0].decode() == "p_p1":
+                        depths.append(param[1])
+                        depth_e.append((param[2], param[3]))
+            return(bin_centers, depths, depth_e, fit_value)
+
+def joint_spectroscopic_lightcurve_fit(params, wl, times1, spectra1, detrenders1, times2, spectra2, detrenders2,\
+                                       bins, sld, bin_unit = "nm", sys_method = "gp", juliet_name = None,\
+                                       mode = None, plot = False, vertical_offset = 0.015, figure_offset = 0.015,\
+                                       savefig = False, fig_name = None, sampler = "dynamic_dynesty"):
+    
+    ordered_binned_spectrum1, ordered_binned_errors1, bin_centers = binning(wl, spectra1, bins, bin_unit = bin_unit)
+    ordered_binned_spectrum2, ordered_binned_errors2, bin_centers = binning(wl, spectra2, bins, bin_unit = bin_unit)
+    
+    bin_lst = np.loadtxt(bins, delimiter = "\t")
+    if bin_unit == "nm":
+        bin_lst = bin_lst*10
+        
+    fits = []
+    depths = []
+    depth_e = []
+    fit_value = []
+    if os.path.exists("juliet_fits/" + juliet_name) != True:
+        os.mkdir("juliet_fits/" + juliet_name)
+    
+    colormap = plt.cm.nipy_spectral
+    colors = colormap(np.linspace(0.1, 0.9, len(ordered_binned_spectrum1)))
+        
+    plt.figure(figsize = (8, 24))
+    v_off = 0
+    fig_off = 0
+        
+    for i in range(len(ordered_binned_spectrum1)):
+        if mode == None:
+            print("For limb darkening, please pass mode = which HST mode you're using :)")
+            break
+        c1, c2 = sld.compute_quadratic_ld_coeffs(
+        wavelength_range=np.array([bin_lst[i][0], bin_lst[i][1]]),
+        mode=mode)
+        params["c1"] = [c1]
+        params["c2"] = [c2]
+        if sys_method == "gp":
+            name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
+            wl_lc = joint_white_light_fit(params, times1, ordered_binned_spectrum1[i], ordered_binned_errors1[i], detrenders1, times2, ordered_binned_spectrum2[i], ordered_binned_errors2[i], detrenders2, sys_method = "gp", juliet_name=name, limb_darkening = "fixed", sampler = sampler)
+            fits.append(wl_lc)
+            fit_value.append(np.array([wl_lc.posteriors['lnZ'], wl_lc.posteriors['lnZerr']]))
+                
+        elif sys_method == "linear":
+            name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
+            wl_lc = joint_white_light_fit(params, times1, ordered_binned_spectrum1[i], ordered_binned_errors1[i], detrenders1, times2, ordered_binned_spectrum2[i], ordered_binned_errors2[i], detrenders2, sys_method = "linear",juliet_name=name, sampler = sampler)
+            fits.append(wl_lc)
+            fit_value.append(np.array([wl_lc.posteriors['lnZ'], wl_lc.posteriors['lnZerr']]))
+
+        if plot == True:
+            phases = juliet.utils.get_phases(times1, params["P"], params["t0"])
+            phases_2 = juliet.utils.get_phases(times2, params["P"], params["t0"])
+
+            transit_plus_GP_model1 = wl_lc.lc.evaluate('STIS1')
+            transit_model1 = wl_lc.lc.evaluate('STIS1', evaluate_transit = True)
+
+            gp_model1 = transit_plus_GP_model1 - transit_model1
+
+            transit_plus_GP_model2 = wl_lc.lc.evaluate('STIS2')
+            transit_model2 = wl_lc.lc.evaluate('STIS2', evaluate_transit = True)
+
+            gp_model2 = transit_plus_GP_model2 - transit_model2
+
+            offset1 = np.nanmedian(wl_lc.posteriors['posterior_samples']['mflux_STIS1'])
+            offset2 = np.nanmedian(wl_lc.posteriors['posterior_samples']['mflux_STIS2'])
+            if times1[0]%params["P"] < times2[0]%params["P"]:
+                t_diff = ((times2[-1] - times1[-1])%params["P"])/params["P"]
+            else:
+                t_diff = ((times1[-1] - times2[-1])%params["P"])/params["P"]
+
+            t_final = np.linspace(times1[0], (times1[-1]+t_diff)[0], 1000)
+            transit_model2_resamp, error68_up, error68_down = wl_lc.lc.evaluate('STIS2', evaluate_transit = True, t = t_final, return_err = True)
+            model_phases = juliet.utils.get_phases(t_final, params["P"], params["t0"])
+
+            offset3 = np.nanmedian(wl_lc.posteriors['posterior_samples']['mflux_STIS2'])
+            plt.scatter(phases, (ordered_binned_spectrum1[i]/np.median(ordered_binned_spectrum1[i][:10])) + v_off,alpha=0.3, label = "raw data (transit 1)", color = colors[i], s = 15)
+            plt.scatter(phases, (ordered_binned_spectrum1[i]/np.median(ordered_binned_spectrum1[i][:10])) - (transit_plus_GP_model1 - transit_model1) + offset1 + v_off,alpha=1, label = "gp detrending (transit 1)", color = colors[i], s = 15)
+            
+            plt.scatter(phases_2, (ordered_binned_spectrum2[i]/np.median(ordered_binned_spectrum2[i][:10])) + v_off,alpha=0.3, label = "raw data (transit 2)", color = colors[i], s = 15)
+            plt.scatter(phases_2, (ordered_binned_spectrum2[i]/np.median(ordered_binned_spectrum2[i][:10])) - (transit_plus_GP_model2 - transit_model2) + offset2 + v_off,alpha=1, label = "gp detrending (transit 2)", color = colors[i], s = 15)
+
+            plt.plot(model_phases, transit_model2_resamp + offset3 + v_off, color = colors[i], label = "gp + transit model", zorder = 0)
+            plt.fill_between(model_phases, error68_up+offset3 + v_off, error68_down+offset3 + v_off, color = colors[i], alpha = 0.2, label = "68% error")
+
+            txt = plt.text(phases[0], 1.004 + fig_off ,str(bin_lst[i]/10000), size=11, color='black', weight = "bold")
+            txt.set_path_effects([PathEffects.withStroke(linewidth=5, foreground='w')])
+
+            v_off -= vertical_offset
+            fig_off -= figure_offset
+    
+    if plot == True:    
+        plt.ylabel("Relative Flux + Vertical Offset")
+        plt.xlabel("Phase")
+        plt.ylim(1.004 + fig_off - figure_offset, 1.004 + figure_offset)
+        if savefig == True:
+            plt.savefig(fig_name, dpi = 300, facecolor = "white", bbox_inches="tight")
+        else:
+            plt.show()  
+    
+    if sys_method == "gp":
+        for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
+            fit = np.genfromtxt(file, dtype=None)
+            for param in fit:
+                if param[0].decode() == "p_p1":
+                    depths.append(param[1])
+                    depth_e.append((param[2], param[3]))
+                    
+        return(bin_centers, depths, depth_e, fit_value)
+    elif sys_method == "linear":
+        if sys_method == "LM":
+            print("not implemented :]")
+        else:
+            for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
+                fit = np.genfromtxt(file, dtype=None)
+                for param in fit:
+                    if param[0].decode() == "p_p1":
+                        depths.append(param[1])
+                        depth_e.append((param[2], param[3]))
+            
+            return(bin_centers, depths, depth_e, fit_value)    
+    
+
+def model_light_curve(p, t, params, detrenders):
+    """
+    Generates a light curve with systematics. Uses the lmfit 'p' dictionary.
+    """
+    params.t0  = p['t0']
+    params.per = p['P']
+    params.rp  = p['p']
+    params.a   = p['a']
+    params.inc = inclination(p['b'], p['a'])
+    params.ecc = p['ecc']
+    params.w   = p['omega']
+    #params.limb_dark = "quadratic"
+    #params.u = [0.1, 0.3]
+
+    if p['p'] == 0:
+        light_curve = np.ones(len(t)) # if it doesn't want a transit, give it a flat line
+    else:
+        light_curve = batman.TransitModel(params, t).light_curve(params)
+    
+    # there must be a way to make this more robust
+    systematics =  p["V2_roll"]*np.array(detrenders["V2_roll"]) + p["V3_roll"]*np.array(detrenders["V3_roll"]) + \
+    p["Latitude"]*np.array(detrenders["Latitude"]) + p["Longitude"]*np.array(detrenders["Longitude"]) + \
+    p["RA"]*np.array(detrenders["RA"]) + p["DEC"]*np.array(detrenders["DEC"]) + 1 #p["linear"]*t + 1 #
+    
+    model = p['f0'] * light_curve * systematics
+    t_final = np.linspace(t[0], t[-1], 1000)  
+    light_curve_plot = batman.TransitModel(params, t_final).light_curve(params)
+    #plt.plot(t_final, p['f0'] * light_curve_plot)
+    #plt.xlabel("Time (BJD-TBD)")
+    #plt.ylabel("Counts")
+    #plt.plot(model)
+    #plt.plot(model)
+    #plt.show()
+    #print(model)
+    return model, systematics, light_curve
+
+    
+def residual(p, t, params, data, err, detrenders):
+    """
+    Outputs the residual of the model and data.
+    """
+    
+    model = model_light_curve(p, t, params, detrenders)[0]
+    sys = model_light_curve(p, t, params, detrenders)[1]
+    
+    '''
+    plt.scatter(t, data/sys, color = "purple", label = "with systematics")
+    plt.legend()
+    plt.xlabel("Time (BJD-TBD)")
+    plt.ylabel("Counts")
+    plt.show()
+    plt.plot(t, model)
+    plt.scatter(t, data, color = "blue", label = "Original", alpha = 0.5)
+    plt.xlabel("Time (BJD-TBD)")
+    plt.ylabel("Counts")
+    plt.legend()
+    plt.show()
+    '''
+    if err == None:
+        err = np.sqrt(p['f0']) # if no errorbars specified, assume shot noise uncertainty from baseline flux
+
+    chi2 = sum((data-model)**2/err**2)
+    res = np.std((data-model)/max(model))
+    
+    return (data-model)/err
+
+def transit_final(p, t, params, detrenders):
+    transit_model_final = batman.TransitModel(params, t).light_curve(params)
+    systematics = p["V2_roll"]*np.array(detrenders["V2_roll"]) + p["V3_roll"]*np.array(detrenders["V3_roll"]) + \
+    p["Latitude"]*np.array(detrenders["Latitude"]) + p["Longitude"]*np.array(detrenders["Longitude"]) + \
+    p["RA"]*np.array(detrenders["RA"]) + p["DEC"]*np.array(detrenders["DEC"]) + 1
+    
+    #final_model = p["f0"] * transit_model_final * systematics
+    
+    return [p["f0"], transit_model_final, systematics]
+
+
+def model_light_curve_joint(p, t1, t2, params, detrenders1, detrenders2):
     """
     Generates a light curve with systematics. Uses the lmfit 'p' dictionary.
     """
@@ -1477,13 +1706,13 @@ def model_light_curve_joint(p, t1, t2, params, jitters1, jitters2):
         
     
     # there must be a way to make this more robust
-    systematics1 =  p["V2_roll_1"]*np.array(jitters1["V2_roll"]) + p["V3_roll_1"]*np.array(jitters1["V3_roll"]) + \
-    p["Latitude_1"]*np.array(jitters1["Latitude"]) + p["Longitude_1"]*np.array(jitters1["Longitude"]) + \
-    p["RA_1"]*np.array(jitters1["RA"]) + p["DEC_1"]*np.array(jitters1["DEC"]) + 1 
+    systematics1 =  p["V2_roll_1"]*np.array(detrenders1["V2_roll"]) + p["V3_roll_1"]*np.array(detrenders1["V3_roll"]) + \
+    p["Latitude_1"]*np.array(detrenders1["Latitude"]) + p["Longitude_1"]*np.array(detrenders1["Longitude"]) + \
+    p["RA_1"]*np.array(detrenders1["RA"]) + p["DEC_1"]*np.array(detrenders1["DEC"]) + 1 
     
-    systematics2 =  p["V2_roll_2"]*np.array(jitters2["V2_roll"]) + p["V3_roll_2"]*np.array(jitters2["V3_roll"]) + \
-    p["Latitude_2"]*np.array(jitters2["Latitude"]) + p["Longitude_2"]*np.array(jitters2["Longitude"]) + \
-    p["RA_2"]*np.array(jitters2["RA"]) + p["DEC_2"]*np.array(jitters2["DEC"]) + 1 
+    systematics2 =  p["V2_roll_2"]*np.array(detrenders2["V2_roll"]) + p["V3_roll_2"]*np.array(detrenders2["V3_roll"]) + \
+    p["Latitude_2"]*np.array(detrenders2["Latitude"]) + p["Longitude_2"]*np.array(detrenders2["Longitude"]) + \
+    p["RA_2"]*np.array(detrenders2["RA"]) + p["DEC_2"]*np.array(detrenders2["DEC"]) + 1 
     
     transit1 = p['f0'] * light_curve1 * systematics1
     transit2 = p['f0'] * light_curve2 * systematics2
@@ -1504,15 +1733,15 @@ def model_light_curve_joint(p, t1, t2, params, jitters1, jitters2):
     return [transit1, transit2], [systematics1, systematics2], [light_curve1, light_curve2]
 
     
-def residual_joint(p, t1, t2, params, data1, data2, err, jitters1, jitters2):
+def residual_joint(p, t1, t2, params, data1, data2, err, detrenders1, detrenders2):
     """
     Outputs the residual of the model and data.
     """
     
-    model1 = model_light_curve_joint(p, t1, t2, params, jitters1, jitters2)[0][0]
-    model2 = model_light_curve_joint(p, t1, t2, params, jitters1, jitters2)[0][1]
-    sys1 = model_light_curve_joint(p, t1, t2, params, jitters1, jitters2)[1][0]
-    sys2 = model_light_curve_joint(p, t1, t2, params, jitters1, jitters2)[1][1]
+    model1 = model_light_curve_joint(p, t1, t2, params, detrenders1, detrenders2)[0][0]
+    model2 = model_light_curve_joint(p, t1, t2, params, detrenders1, detrenders2)[0][1]
+    sys1 = model_light_curve_joint(p, t1, t2, params, detrenders1, detrenders2)[1][0]
+    sys2 = model_light_curve_joint(p, t1, t2, params, detrenders1, detrenders2)[1][1]
     
     phases = juliet.utils.get_phases(t1, p["P"], p["t0"])
     phases2 = juliet.utils.get_phases(t2, p["P"], p["t0"])
@@ -1538,16 +1767,16 @@ def residual_joint(p, t1, t2, params, data1, data2, err, jitters1, jitters2):
     
     return ((data1-model1)**2/err**2) + ((data2-model2)**2/err**2)
 
-def transit_final_joint(p, t_final, params, jitters1, jitters2):
+def transit_final_joint(p, t_final, params, detrenders1, detrenders2):
     transit_model_final = batman.TransitModel(params, t_final).light_curve(params)
     
-    systematics1 =  p["V2_roll_1"]*np.array(jitters1["V2_roll"]) + p["V3_roll_1"]*np.array(jitters1["V3_roll"]) + \
-    p["Latitude_1"]*np.array(jitters1["Latitude"]) + p["Longitude_1"]*np.array(jitters1["Longitude"]) + \
-    p["RA_1"]*np.array(jitters1["RA"]) + p["DEC_1"]*np.array(jitters1["DEC"]) + 1 
+    systematics1 =  p["V2_roll_1"]*np.array(detrenders1["V2_roll"]) + p["V3_roll_1"]*np.array(detrenders1["V3_roll"]) + \
+    p["Latitude_1"]*np.array(detrenders1["Latitude"]) + p["Longitude_1"]*np.array(detrenders1["Longitude"]) + \
+    p["RA_1"]*np.array(detrenders1["RA"]) + p["DEC_1"]*np.array(detrenders1["DEC"]) + 1 
     
-    systematics2 =  p["V2_roll_2"]*np.array(jitters2["V2_roll"]) + p["V3_roll_2"]*np.array(jitters2["V3_roll"]) + \
-    p["Latitude_2"]*np.array(jitters2["Latitude"]) + p["Longitude_2"]*np.array(jitters2["Longitude"]) + \
-    p["RA_2"]*np.array(jitters2["RA"]) + p["DEC_2"]*np.array(jitters2["DEC"]) + 1 
+    systematics2 =  p["V2_roll_2"]*np.array(detrenders2["V2_roll"]) + p["V3_roll_2"]*np.array(detrenders2["V3_roll"]) + \
+    p["Latitude_2"]*np.array(detrenders2["Latitude"]) + p["Longitude_2"]*np.array(detrenders2["Longitude"]) + \
+    p["RA_2"]*np.array(detrenders2["RA"]) + p["DEC_2"]*np.array(detrenders2["DEC"]) + 1 
     
     #final_model = p["f0"] * transit_model_final * systematics
     
@@ -1590,154 +1819,6 @@ def binning(wl, spectra, bins, bin_unit = "nm"):
         ordered_binned_errors.append(binned_errors[:,j])
 
     return(ordered_binned_spectrum, ordered_binned_errors, bin_centers)
-
-def spectroscopic_lightcurve_fit(params, wl, times, spectra, jitters, bins, sld, bin_unit = "nm", sys_method = "gp", juliet_name = None, mode = None, plot = False, method = None, sampler = None):
-    
-    ordered_binned_spectrum, ordered_binned_errors, bin_centers = binning(wl, spectra, bins, bin_unit = bin_unit)
-    #plt.figure()    
-    #plt.errorbar(times, ordered_binned_spectrum[0], yerr = ordered_binned_errors[0], fmt = ".")
-    #plt.show()
-    bin_lst = np.loadtxt(bins, delimiter = "\t")
-    if bin_unit == "nm":
-        bin_lst = bin_lst*10
-        
-    fits = []
-    depths = []
-    depth_e = []
-    if os.path.exists("juliet_fits/" + juliet_name) != True:
-        os.mkdir("juliet_fits/" + juliet_name)
-    for i in range(len(ordered_binned_spectrum)):
-        if mode == None:
-            print("For limb darkening, please pass mode = which HST mode you're using :)")
-            break
-        c1, c2 = sld.compute_quadratic_ld_coeffs(
-        wavelength_range=np.array([bin_lst[i][0], bin_lst[i][1]]),
-        mode=mode)
-        params["c1"] = [c1]
-        params["c2"] = [c2]
-        #print(c1, c2)
-        if sys_method == "gp":
-            name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
-            wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], jitters, sys_method = "gp", juliet_name=name, sampler = sampler)
-            fits.append(wl_lc)
-            if plot == True:
-                transit_plus_GP_model = wl_lc.lc.evaluate('STIS')
-                transit_model = wl_lc.lc.evaluate('STIS', evaluate_transit = True)
-
-                gp_model = transit_plus_GP_model - transit_model
-
-                plt.figure(figsize = (10,7))
-                plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]))
-                plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]) - (transit_plus_GP_model - transit_model),alpha=0.4, label = "gp detrending")
-                plt.ylabel("Relative Flux")
-                plt.xlabel("Time (BJD)")
-                plt.plot(times, transit_model, color='red',zorder=10, label = "gp transit model")
-                plt.legend()
-                plt.show()
-                
-        elif sys_method == "jitter":
-            if method == "LM":
-                wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], jitters, sys_method = "jitter", method = "LM")
-                fits.append(wl_lc)
-            else:
-                name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
-                wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], jitters, sys_method = "jitter", juliet_name = name, sampler = sampler)
-                fits.append(wl_lc)
-                if plot == True:
-                    transit_plus_sys_model = wl_lc.lc.evaluate('STIS')
-                    transit_model = wl_lc.lc.evaluate('STIS', evaluate_transit = True)
-
-                    sys_model = transit_plus_sys_model - transit_model
-
-                    plt.figure(figsize = (10,7))
-                    plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]))
-                    plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]) - (transit_plus_sys_model - transit_model),alpha=0.4, label = "sys detrending")
-                    plt.ylabel("Relative Flux")
-                    plt.xlabel("Time (BJD)")
-                    plt.plot(times, transit_model, color='red',zorder=10, label = "jitter transit model")
-                    plt.legend()
-                    plt.show()
-            
-    
-    if sys_method == "gp":
-        for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
-            fit = np.genfromtxt(file, dtype=None)
-            for param in fit:
-                if param[0].decode() == "p_p1":
-                    depths.append(param[1])
-                    depth_e.append((param[2], param[3]))
-        return(bin_centers, depths, depth_e)
-    
-    elif sys_method == "jitter":
-        if method == "LM":
-            print("sorry still gotta do this lol I'm not sure it's that useful")
-        else:
-            for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
-                fit = np.genfromtxt(file, dtype=None)
-                for param in fit:
-                    if param[0].decode() == "p_p1":
-                        depths.append(param[1])
-                        depth_e.append((param[2], param[3]))
-            return(bin_centers, depths, depth_e)
-            
-        
-        
-def joint_spectroscopic_lightcurve_fit(params, wl, times1, spectra1, jitters1, times2, spectra2, jitters2, bins, sld, bin_unit = "nm", sys_method = "gp", juliet_name = None, mode = None, plot = False, sampler = None):
-    
-    ordered_binned_spectrum1, ordered_binned_errors1, bin_centers = binning(wl, spectra1, bins, bin_unit = bin_unit)
-    ordered_binned_spectrum2, ordered_binned_errors2, bin_centers = binning(wl, spectra2, bins, bin_unit = bin_unit)
-    
-    bin_lst = np.loadtxt(bins, delimiter = "\t")
-    if bin_unit == "nm":
-        bin_lst = bin_lst*10
-        
-    fits = []
-    depths = []
-    depth_e = []
-    if os.path.exists("juliet_fits/" + juliet_name) != True:
-        os.mkdir("juliet_fits/" + juliet_name)
-        
-    for i in range(len(ordered_binned_spectrum1)):
-        if mode == None:
-            print("For limb darkening, please pass mode = which HST mode you're using :)")
-            break
-        c1, c2 = sld.compute_quadratic_ld_coeffs(
-        wavelength_range=np.array([bin_lst[i][0], bin_lst[i][1]]),
-        mode=mode)
-        params["c1"] = [c1]
-        params["c2"] = [c2]
-        print(c1, c2)
-        if sys_method == "gp":
-            name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
-            wl_lc = joint_white_light_fit(params, times1, ordered_binned_spectrum1[i], ordered_binned_errors1[i], jitters1, times2, ordered_binned_spectrum2[i], ordered_binned_errors2[i], jitters2, sys_method = "gp", juliet_name=name, limb_darkening = "fixed", sampler = sampler)
-            fits.append(wl_lc)
-            
-            #if plot == True:
-                
-        elif sys_method == "jitter":
-            wl_lc = joint_white_light_fit(params, times1, ordered_binned_spectrum1[i], ordered_binned_errors1[i], jitters1, times2, ordered_binned_spectrum2[i], ordered_binned_errors2[i], jitters2, sys_method = "jitter",juliet_name=name, sampler = sampler)
-            fits.append(wl_lc)
-    
-    if sys_method == "gp":
-        for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
-            fit = np.genfromtxt(file, dtype=None)
-            for param in fit:
-                if param[0].decode() == "p_p1":
-                    depths.append(param[1])
-                    depth_e.append((param[2], param[3]))
-        return(bin_centers, depths, depth_e)
-    elif sys_method == "jitter":
-        if sys_method == "LM":
-            print("sorry still gotta do this")
-        else:
-            for file in sorted(glob.glob("juliet_fits/" + juliet_name + "/*bin*/*posteriors.dat*")):
-                fit = np.genfromtxt(file, dtype=None)
-                for param in fit:
-                    if param[0].decode() == "p_p1":
-                        depths.append(param[1])
-                        depth_e.append((param[2], param[3]))
-            
-            return(bin_centers, depths, depth_e)
     
     
 #Limb Darkeneing
@@ -2124,6 +2205,44 @@ def int_tabulated(X, F, sort=False):
     return np.sum(2.0 * h * (7.0 * (z[ii - 4] + z[ii]) + 32.0 * (z[ii - 3] + z[ii - 1]) + 12.0 * z[ii - 2]) / 45.0)
 
 
+# PCA TOOLS:
+def get_sigma(x):
+    """
+    This function returns the MAD-based standard-deviation.
+    """
+    median = np.median(x)
+    mad = np.median(np.abs(x-median))
+    return 1.4826*mad
+
+def standarize_data(input_data):
+    output_data = np.copy(input_data)
+    averages = np.median(input_data,axis=1)
+    for i in range(len(averages)):
+        sigma = get_sigma(output_data[i,:])
+        output_data[i,:] = output_data[i,:] - averages[i]
+        output_data[i,:] = output_data[i,:]/sigma
+    return output_data
+
+# typically the data will already be standardized
+def classic_PCA(Input_Data, standarize = False):
+    """
+    classic_PCA function
+
+    Description
+
+    This function performs the classic Principal Component Analysis on a given dataset.
+    """
+    if standarize:
+        Data = standarize_data(Input_Data)
+    else:
+        Data = np.copy(Input_Data)
+    eigenvectors_cols,eigenvalues,eigenvectors_rows = np.linalg.svd(np.cov(Data))
+    idx = eigenvalues.argsort()
+    eigenvalues = eigenvalues[idx[::-1]]
+    eigenvectors_cols = eigenvectors_cols[:,idx[::-1]]
+    eigenvectors_rows = eigenvectors_rows[idx[::-1],:]
+    # Return: V matrix, eigenvalues and the principal components.
+    return eigenvectors_rows,eigenvalues,np.dot(eigenvectors_rows,Data)
 
 
 
