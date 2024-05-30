@@ -202,7 +202,7 @@ def spectrum_outliers(spectra, n = 5):
                 
     return cut_s
 
-# function to do a basic centroid trace fit to the data - should look into doing this with moffat instead
+# function to do a basic centroid trace fit to the data
 def trace_spectrum(data, xi, xf, y_guess, profile_radius = 20, gauss_filter_width = 10):
     # x-axis
     x = np.arange(xi,xf)
@@ -248,7 +248,7 @@ def dq_clean(files, dqs, flags):
     # return the files with the bad pixel locations set as -1
     return files_clean
 
-
+# function to do "difference cleaning" between frames
 def difference_clean(files, wind_size, sigma):
     
     # initializing lists
@@ -320,7 +320,7 @@ def difference_clean(files, wind_size, sigma):
     return files_clean
 
 
-
+# function to do hot and cold pixel marking
 def hc_clean(files, hc_sigma, hc_window_size):
     
     # initializing list
@@ -352,7 +352,7 @@ def hc_clean(files, hc_sigma, hc_window_size):
     
     return files_clean
 
-
+# function to mark values offset from a spline fit
 def spline_mark(files, traces, spline_sigma, inner_factor, outer_factor):
 
     files_clean = np.zeros_like(files)
@@ -363,7 +363,6 @@ def spline_mark(files, traces, spline_sigma, inner_factor, outer_factor):
         # create temporary list to hold the individual splines for that column
         spline_fits = []
         for i in files:
-            #test_spline = UnivariateSpline(np.arange(0,len(i[:,column]),1), i[:,column], s = 900)
             test_spline = UnivariateSpline(np.arange(0,len(i[:,column]),1), i[:,column])
             spline_fits.append(test_spline(np.arange(0,len(i[:,column]),1)))
 
@@ -380,13 +379,9 @@ def spline_mark(files, traces, spline_sigma, inner_factor, outer_factor):
     for frame_idx in range(len(files)):
         frame = np.copy(files[frame_idx])
         # use the median spline to reject cosmic rays for each frame's column
-        #for k in range(len(frame[0])):
-        # make this into groups? and then average sigma between them? no that won't work cause sigma changes too much
-        #for k in range(600,800,1):
         for k in range(2,len(frame[0])-2,1):
             spline_use_single = np.nanmedian(splines[:,k-2:k+2], axis = 1)
             spline_use[:,k] = spline_use_single*np.nanmax(frame[:,k])
-            #shift_test = xcorr(spline_use[:,k], (splines[:,k]*np.nanmax(frame[:,k])))
 
             # scale the normalized median spline to the max of the frame before taking residual
             resid = frame[:,k] - (spline_use[:,k])
@@ -395,32 +390,21 @@ def spline_mark(files, traces, spline_sigma, inner_factor, outer_factor):
             #j = 0
             for m in range(len(resid)):
                 # if the residual value is greater than residual stdev * sigma, then mark it as a problem
-                #print(traces[frame_idx][1][m])
                 if m > traces[frame_idx][1][m]+4 or m < traces[frame_idx][1][m]-4:
                     if resid[m] > cutoff:
-                        #cr_frame.append([k,m])
-                        #j = j+1
                         frame[m,k] = -4
                 elif m > traces[frame_idx][1][m]+2 or m < traces[frame_idx][1][m]-2:
                     if resid[m] > cutoff * outer_factor:
-                        #cr_frame.append([k,m])
-                        #j = j+1
                         frame[m,k] = -4
                 else:
                     if resid[m] > cutoff * inner_factor:
-                        #cr_frame.append([k,m])
-                        #j = j+1
                         frame[m,k] = -4
-                    
-            #print(j)
-            # even after averaging, normalizing the spline and then scaling that to the max value of the new column, still strong 
-            # residuals around the center at 10 sigma level
                 
         files_clean[frame_idx] = frame
         
     return files_clean
 
-
+# function that does the cleaning for the marked "bad" pixels
 def marked_clean(files, manual_badcolumn, s):
     bad_columns = []
     for frame_idx in range(len(files)):
@@ -429,69 +413,16 @@ def marked_clean(files, manual_badcolumn, s):
         if manual_badcolumn == True:
             bad_columns_inb = [49, 89, 179, 180, 348, 399, 400, 491, 541, 771, 836, 841, 885, 943]
         else:
-        #spline_use = np.zeros_like(splines)
-        #for column in range(len(frame[0])-1):
-        #    spline_use_c = splines[:,column]*np.nanmax(frame[:,column])
-        #    spline_use[:,column] = spline_use_c
-        
             for column in range(2,len(frame[0])-2,1):
                 bad_counter = 0
                 for pixel in range(len(frame)):
                     if frame[pixel][column] == -1:
                         bad_counter = bad_counter + 1
-                        #if pixel < 59 and pixel > 56:
-                        #    bad_counter = 100
-                #print(bad_counter)
+
                 if bad_counter >= len(frame)/6:
                     bad_columns_inb.append(column)
-                    #frame[:,column] = (frame[:,column-1]+frame[:,column+1])/2
         bad_columns.append(bad_columns_inb)
-    #print(bad_columns)
     
-    '''
-    if splines is None:
-        # take average of spline fits across frames
-        splines = np.zeros_like(files[0])
-        # for each column
-        for column in range(len(files[0][0])):
-            # create temporary list to hold the individual splines for that column
-            spline_fits = []
-            if column not in bad_columns[0]:
-                for i in files:
-                    #test_spline = UnivariateSpline(np.arange(0,len(i[:,column]),1), i[:,column], s = 900)
-                    test_spline = UnivariateSpline(np.arange(0,len(i[:,column]),1), i[:,column], s = s)
-                    spline_fits.append(test_spline(np.arange(0,len(i[:,column]),1)))
-
-                # take the median of the splines from each frame
-                med = np.nanmedian(spline_fits, axis = 0)
-
-                # normalize the spline before appending
-                norm_med = med/np.nanmax(med)
-                splines[:,column] = norm_med
-            else:
-                for i in files:
-                    if column-1 in bad_columns:
-                        test_spline1 = UnivariateSpline(np.arange(0,len(i[:,column+1]),1), i[:,column+1], s = s)
-                        test_spline2 = UnivariateSpline(np.arange(0,len(i[:,column+2]),1), i[:,column+2], s = s)
-                        spline_fits.append((test_spline1(np.arange(0,len(i[:,column]),1))+ test_spline2(np.arange(0,len(i[:,column]),1)))/2)
-                    if column+1 in bad_columns:
-                        test_spline1 = UnivariateSpline(np.arange(0,len(i[:,column-2]),1), i[:,column-2], s = s)
-                        test_spline2 = UnivariateSpline(np.arange(0,len(i[:,column-1]),1), i[:,column-1], s = s)
-                        spline_fits.append((test_spline1(np.arange(0,len(i[:,column]),1))+ test_spline2(np.arange(0,len(i[:,column]),1)))/2)
-
-                    else:
-                        test_spline1 = UnivariateSpline(np.arange(0,len(i[:,column+1]),1), i[:,column+1], s = s)
-                        test_spline2 = UnivariateSpline(np.arange(0,len(i[:,column-1]),1), i[:,column-1], s = s)
-                        spline_fits.append((test_spline1(np.arange(0,len(i[:,column]),1))+ test_spline2(np.arange(0,len(i[:,column]),1)))/2)
-
-                # take the median of the splines from each frame
-                med = np.nanmedian(spline_fits, axis = 0)
-                
-                # normalize the spline before appending
-                norm_med = med/np.nanmax(med)
-                splines[:,column] = norm_med
-        
-    '''
     # there are columns full of bad pixels - if an entire column has more than 50% pixels marked as bad (=-1)
     # then use the average of the two surrounding columns 
     files_clean = np.zeros_like(files)
@@ -499,10 +430,6 @@ def marked_clean(files, manual_badcolumn, s):
     frame_clean_1 = []
     for frame_idx in range(len(files)):
         frame = np.copy(files[frame_idx])
-        #spline_use = np.zeros_like(splines)
-        #for column in range(2,len(frame[0])-2,1):
-            #spline_use_c = splines[:,column]*np.nanmax(frame[:,column])
-            #spline_use[:,column] = spline_use_c
         for column in range(2,len(frame[0])-2,1):
             
             for val in range(len(frame)):
@@ -537,7 +464,7 @@ def marked_clean(files, manual_badcolumn, s):
     return files_clean
 
 
-# how best to name the variables and still be able to feed them in? use the same name for all the arrays? seems dangerous
+# master cleaning function, calls all of the above single functions, all of which can be turned off
 def clean_data(files, dq_correct = True, dqs = None,  flags = [16], difference_correct = True, wind_size = 20, wind_sigma = 5, hc_correct = True, hc_sigma = 3, hc_wind_size = 2, spline_correct = True, traces = None, spline_sigma = 3, s = 7e5, manual_badcolumn = False, inner_factor = 4, outer_factor = 2, return_marked = False):
     
     if dq_correct == True:
@@ -589,16 +516,16 @@ def clean_data(files, dq_correct = True, dqs = None,  flags = [16], difference_c
         return cleaned_data
 
 
-
+# converting header times to bjd
 def times_to_bjd(headers, starname = "WASP-69"):
     times = []
     exptimes = []
     expstart = []
     expend = []
     for i in headers:
-        #times.append(i["DATE-OBS"]+i["TIME-OBS"])
+
         times.append(i["DATE-OBS"]+"T"+i["TIME-OBS"])
-        #print(i["DATE-OBS"])
+
         exptimes.append(i["EXPTIME"])
         expstart.append(i["EXPSTART"])
         expend.append(i["EXPEND"])
@@ -607,29 +534,28 @@ def times_to_bjd(headers, starname = "WASP-69"):
 
     jd_conv = 2400000.5
     t_start = Time(np.array(expstart)+jd_conv, format='jd', scale='utc')
-    t_end = Time(np.array(expend)+jd_conv, format='jd', scale='utc')
-    #t = t.plot_date
+    t_end = Time(np.array(expend)+jd_conv, format='jd', scale='utc'
 
     t_start_bjd = utc_tdb.JDUTC_to_BJDTDB(t_start,starname = starname)#hip_id=8102 , lat=-30.169283, longi=-70.806789, alt=2241.9)
     t_end_bjd = utc_tdb.JDUTC_to_BJDTDB(t_end,starname = starname)# , lat=-30.169283, longi=-70.806789, alt=2241.9)
 
     return t_start_bjd, t_end_bjd
 
-
-def spectral_extraction(data, trace, method = "optimal", correct_bkg = False, aperture_radius = 15., ron = 1., gain = 1.,                         nsigma = 12, polynomial_spacing = 0.75, polynomial_order = 3, errors = None):
+# spectral extraction, with options for optimal or simple box
+def spectral_extraction(data, trace, method = "optimal", correct_bkg = False, aperture_radius = 15., ron = 1., gain = 1.,                         nsigma = 12, polynomial_spacing = 0.75, polynomial_order = 3, errors = None, background_radius=30):
     
     if errors is not None:
         if method == "optimal":
             spectrum = spectroscopy.getOptimalSpectrum(data, trace[1], aperture_radius, ron, gain, nsigma, polynomial_spacing, polynomial_order, data_variance = np.array(errors)**2)#, min_column = 600)
         elif method == "simple":
-            spectrum = spectroscopy.getSimpleSpectrum(data, trace[0], trace[1], aperture_radius, correct_bkg = correct_bkg, error_data = errors)#, min_column = 600)
+            spectrum = spectroscopy.getSimpleSpectrum(data, trace[0], trace[1], aperture_radius, background_radius = background_radius, correct_bkg = correct_bkg, error_data = errors)#, min_column = 600)
         
         
     else:
         if method == "optimal":
             spectrum = spectroscopy.getOptimalSpectrum(data, trace[1], aperture_radius, ron, gain, nsigma, polynomial_spacing, polynomial_order)#, min_column = 600)
         elif method == "simple": 
-            spectrum = spectroscopy.getSimpleSpectrum(data, trace[0], trace[1], aperture_radius, correct_bkg = correct_bkg)#, min_column = 600)
+            spectrum = spectroscopy.getSimpleSpectrum(data, trace[0], trace[1], aperture_radius, background_radius = background_radius, correct_bkg = correct_bkg)#, min_column = 600)
         
 
     return spectrum
@@ -693,7 +619,6 @@ def spectral_extraction_bulk(data_lst, trace_lst, method = "optimal", correct_bk
     return spectra     
 
 # cross-correlation
-
 def xcorr(x,y):
     """
     Perform Cross-Correlation on x and y Deviations
@@ -726,6 +651,7 @@ def impact_param(i, a_Rs):
 def inclination(b, a_Rs):
     return np.rad2deg(np.arccos(b/a_Rs))
 
+# master single light curve fitting function
 def white_light_fit(input_params, times, lc, errors, detrenders, sys_method = "linear", limb_darkening = "fixed", gp_kernel = "Matern", N_iters = 3, juliet_name = None, instrument_name = "STIS", sampler = "dynamic_dynesty", gp_priors = "exponential"):
     if os.path.exists("juliet_fits") != True:
         os.mkdir("juliet_fits")
@@ -860,7 +786,7 @@ def white_light_fit(input_params, times, lc, errors, detrenders, sys_method = "l
             other_params_dist = ['fixed', 'normal', 'loguniform']
 
             other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.]]    
-            
+            # if you don't want to define a prior on rho for some reason, you can uncomment this section
             #if "rho" in input_params.keys():
             #    
             #    other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name]
@@ -979,7 +905,7 @@ def white_light_fit(input_params, times, lc, errors, detrenders, sys_method = "l
         other_params_dist = ['fixed', 'normal', 'loguniform', 'loguniform']
 
         other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
-        
+        # if you don't want to define a prior on rho for some reason, you can uncomment this section
         #if "rho" in input_params.keys():
                 
         #    other_params = ["mdilution_" + instrument_name, "mflux_" + instrument_name, "sigma_w_" + instrument_name, \
@@ -1026,7 +952,7 @@ def white_light_fit(input_params, times, lc, errors, detrenders, sys_method = "l
         return results
         
     
-    
+# master joint light curve fitting function   
 def joint_white_light_fit(input_params, times1, lc1, errors1, detrenders1, times2, lc2, errors2, detrenders2, sys_method = "linear", limb_darkening = "fixed", gp_kernel = "Matern", N_iters = 3, juliet_name = None, instrument_name1 = "STIS1", instrument_name2 = "STIS2", sampler = "dynamic_dynesty", gp_priors = "exponential"):
     if os.path.exists("juliet_fits") != True:
         os.mkdir("juliet_fits")
@@ -1181,7 +1107,7 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, detrenders1, times
             other_params_dist = ['fixed', 'normal', 'loguniform', 'fixed', 'normal', 'loguniform']
 
             other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], 1.0, [0.,1.0], [0.1, 10000.]]
-            
+            # if you don't want to define a prior on rho for some reason, you can uncomment this section
             #if "rho" in input_params.keys():
 
             #    other_params = ["mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2]
@@ -1325,7 +1251,7 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, detrenders1, times
 
         other_params_hyperps = [1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6], 1.0, [0.,1.0], [0.1, 10000.], [1e-6, 1e6]]
         
-        
+        # if you don't want to define a prior on rho for some reason, you can uncomment this section
         #if "rho" in input_params.keys():
 
         #    other_params = ["mdilution_" + instrument_name1, "mflux_" + instrument_name1, "sigma_w_" + instrument_name1, "GP_sigma_" + instrument_name1, "mdilution_" + instrument_name2, "mflux_" + instrument_name2, "sigma_w_" + instrument_name2, "GP_sigma_" + instrument_name2]
@@ -1371,7 +1297,8 @@ def joint_white_light_fit(input_params, times1, lc1, errors1, detrenders1, times
         else:
             results = dataset.fit(n_live_points = 500, verbose = True)
         return results
-        
+
+# master single spectroscopic light curve fitting function
 def spectroscopic_lightcurve_fit(params, wl, times, spectra, detrenders, bins, sld, bin_unit = "nm",\
                                  sys_method = "gp", juliet_name = None, mode = None, plot = False,\
                                  vertical_offset = 0.015, figure_offset = 0.015, savefig = False,\
@@ -1403,26 +1330,13 @@ def spectroscopic_lightcurve_fit(params, wl, times, spectra, detrenders, bins, s
         mode=mode)
         params["c1"] = [c1]
         params["c2"] = [c2]
-        #print(c1, c2)
+
         if sys_method == "gp":
             name = juliet_name + "/" + juliet_name + "_bin" + str(i+1).zfill(3)
             wl_lc = white_light_fit(params, times, ordered_binned_spectrum[i], ordered_binned_errors[i], detrenders, sys_method = "gp", juliet_name=name, sampler = sampler)
             fits.append(wl_lc)
             fit_value.append(np.array([wl_lc.posteriors['lnZ'], wl_lc.posteriors['lnZerr']]))
-            #if plot == True:
-            #    transit_plus_GP_model = wl_lc.lc.evaluate('STIS')
-            #    transit_model = wl_lc.lc.evaluate('STIS', evaluate_transit = True)
 
-            #    gp_model = transit_plus_GP_model - transit_model
-
-            #    plt.figure(figsize = (10,7))
-            #    plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]))
-            #    plt.scatter(times, (ordered_binned_spectrum[i]/ordered_binned_spectrum[i][0]) - (transit_plus_GP_model - transit_model),alpha=0.4, label = "gp detrending")
-            #    plt.ylabel("Relative Flux")
-            #    plt.xlabel("Time (BJD)")
-            #    plt.plot(times, transit_model, color='red',zorder=10, label = "gp transit model")
-            #    plt.legend()
-            #    plt.show()
                 
         elif sys_method == "linear":
             if method == "LM":
@@ -1486,6 +1400,8 @@ def spectroscopic_lightcurve_fit(params, wl, times, spectra, detrenders, bins, s
                         depth_e.append((param[2], param[3]))
             return(bin_centers, depths, depth_e, fit_value)
 
+        
+# master joint spectroscopic light curve fitting function
 def joint_spectroscopic_lightcurve_fit(params, wl, times1, spectra1, detrenders1, times2, spectra2, detrenders2,\
                                        bins, sld, bin_unit = "nm", sys_method = "gp", juliet_name = None,\
                                        mode = None, plot = False, vertical_offset = 0.015, figure_offset = 0.015,\
@@ -1605,7 +1521,7 @@ def joint_spectroscopic_lightcurve_fit(params, wl, times1, spectra1, detrenders1
             
             return(bin_centers, depths, depth_e, fit_value)    
     
-
+# batman model for lm fits -- mostly just used for testing, use a sampler + juliet :]
 def model_light_curve(p, t, params, detrenders):
     """
     Generates a light curve with systematics. Uses the lmfit 'p' dictionary.
@@ -1633,13 +1549,7 @@ def model_light_curve(p, t, params, detrenders):
     model = p['f0'] * light_curve * systematics
     t_final = np.linspace(t[0], t[-1], 1000)  
     light_curve_plot = batman.TransitModel(params, t_final).light_curve(params)
-    #plt.plot(t_final, p['f0'] * light_curve_plot)
-    #plt.xlabel("Time (BJD-TBD)")
-    #plt.ylabel("Counts")
-    #plt.plot(model)
-    #plt.plot(model)
-    #plt.show()
-    #print(model)
+
     return model, systematics, light_curve
 
     
@@ -1719,17 +1629,6 @@ def model_light_curve_joint(p, t1, t2, params, detrenders1, detrenders2):
     phases = juliet.utils.get_phases(t1, p["P"], p["t0"])
     phases2 = juliet.utils.get_phases(t2, p["P"], p["t0"])
     
-    
-    #model = p['f0'] * light_curve * systematics
-    #t_final = np.linspace(t[0], t[-1], 1000)  
-    #light_curve_plot = batman.TransitModel(params, t_final).light_curve(params)
-    #plt.plot(t_final, p['f0'] * light_curve_plot)
-    #plt.xlabel("Time (BJD-TBD)")
-    #plt.ylabel("Counts")
-    #plt.plot(model)
-    #plt.plot(model)
-    #plt.show()
-    #print(model)
     return [transit1, transit2], [systematics1, systematics2], [light_curve1, light_curve2]
 
     
@@ -1781,7 +1680,8 @@ def transit_final_joint(p, t_final, params, detrenders1, detrenders2):
     #final_model = p["f0"] * transit_model_final * systematics
     
     return [p["f0"], transit_model_final, [systematics1, systematics2]]
-    
+
+# binning function for spectroscopic fits
 def binning(wl, spectra, bins, bin_unit = "nm"):
     bin_lst = np.loadtxt(bins, delimiter = "\t")
     if bin_unit == "nm":
