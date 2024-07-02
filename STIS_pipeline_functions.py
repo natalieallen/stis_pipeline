@@ -534,7 +534,7 @@ def times_to_bjd(headers, starname = "WASP-69"):
 
     jd_conv = 2400000.5
     t_start = Time(np.array(expstart)+jd_conv, format='jd', scale='utc')
-    t_end = Time(np.array(expend)+jd_conv, format='jd', scale='utc'
+    t_end = Time(np.array(expend)+jd_conv, format='jd', scale='utc')
 
     t_start_bjd = utc_tdb.JDUTC_to_BJDTDB(t_start,starname = starname)#hip_id=8102 , lat=-30.169283, longi=-70.806789, alt=2241.9)
     t_end_bjd = utc_tdb.JDUTC_to_BJDTDB(t_end,starname = starname)# , lat=-30.169283, longi=-70.806789, alt=2241.9)
