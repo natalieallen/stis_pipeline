@@ -83,35 +83,33 @@ def get_data(files, dq = True, jit = True, keep_first_orbit = True):
         # getting the data and header for each of the science frames
         data_lst = []
         header_lst = []
-        for j in sciextlist:
-            data, header = fits.getdata(fits_file, ext = j, header=True)
+        error_lst = []
+        dq_lst = []
+        for j in range(len(sciextlist)):
+            data, header = fits.getdata(fits_file, ext = sciextlist[j], header=True)
             # getting rid of one second exposures
             if header["EXPTIME"] !=  1.0:
                 if header["ASN_MTYP"] == "REPEATOBS":
                     data_lst.append(data)
                     header_lst.append(header)
+                    # getting the error frames -- the location in the list will be the same
+                    err = fits.getdata(fits_file, ext = errextlist[j], header = False)
+                    error_lst.append(err)
+
+                    # same for data quality frames
+                    if dq == True:
+                        dqs = fits.getdata(fits_file, ext = dqextlist[j], header = False)
+                        dq_lst.append(dqs)
+                    
                 else:
                     continue
             
             else:
                 continue
                 
-        # getting the error frames
-        error_lst = []
-        for e in errextlist:
-            err = fits.getdata(fits_file, ext = e, header = False)
-            error_lst.append(err)
-
-        # getting the data quality frames
-        if dq == True:
-            dq_lst = []
-            for k in dqextlist:
-                dqs = fits.getdata(fits_file, ext = k, header = False)
-                dq_lst.append(dqs)
-                
         if jit == True:
             # gets corresponding .jit file for each .fits file
-            data, header = fits.getdata(fits_file, ext = j, header=True)
+            data, header = fits.getdata(fits_file, ext = sciextlist[j], header=True)
             # getting rid of one second exposures
             if header["EXPTIME"] !=  1.0:
                 if header["ASN_MTYP"] == "REPEATOBS":
