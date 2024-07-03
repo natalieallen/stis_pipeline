@@ -231,7 +231,7 @@ def dq_clean(files, dqs, flags):
             bad = np.where(dqs[i] == j)
             bad_indices = list(zip(bad[0], bad[1]))
             bads.append(bad_indices)
-    bads = np.array(bads)
+    bads = np.array(bads, dtype=np.ndarray)
     
     # make a copy of the original fed in files array shape
     files_clean = np.zeros_like(files)
