@@ -20,7 +20,7 @@ astropy
 
 juliet
 
-barycorrpy
+barycorrpy (requires astroquery=0.4.6)
 
 transitspectroscopy
 
